@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Protocol
 
 from dvsim.job.data import JobSpec, ResourceMapping
+from dvsim.job.status import JobStatus
 from dvsim.logging import log
 
 __all__ = (
@@ -73,6 +74,7 @@ class ResourceManager:
         self._provider = provider
         self._missing_policy = missing_policy
         self._usage = defaultdict(int)
+        self._job_status_count_per_tool: dict[str, dict[JobStatus, int]] = {}
 
     async def can_allocate(self, request: ResourceMapping) -> bool:
         """Check if a given resource request can be allocated, given current usage and limits."""
@@ -108,6 +110,30 @@ class ResourceManager:
         for resource, amount in request.items():
             if amount is not None:
                 self._usage[resource] -= amount
+
+    def update_job_status_count_per_tool(
+        self, spec: JobSpec, old: JobStatus, new: JobStatus
+    ) -> None:
+        """Update the index that tracks job status counts per resource."""
+        # TODO: Fix update logic to prevent negative counts
+        if status_counts := self._job_status_count_per_tool.get(spec.tool.name):
+            status_counts[old] = status_counts[old] - 1
+            status_counts[new] = status_counts[new] + 1
+        # Else tool wasn't registered during initialisation. TODO: log warning or fail silently?
+
+    def log_job_status_count_per_tool(self) -> None:
+        """Log job status counts per resource.
+
+        This should be registered as a callback on job status change in Scheduler only when debug
+        logging is enabled.
+        """
+        # TODO: table format log message?
+        # TODO: take CLI input modulo log count.
+        for tool, status_counts in self._job_status_count_per_tool.items():
+            for status, count in status_counts.items():
+                log.debug(
+                    "Tool '%s' has '%s' jobs with status '%s'", tool, count, status.value
+                )
 
     def _log_usage(self, capacity: ResourceMapping, used: ResourceMapping) -> None:
         """Debug log individual job resource usage aggregates."""
@@ -201,3 +227,13 @@ class ResourceManager:
 
         self._log_usage(capacity, aggregate)
         self._emit_validation_errors(missing_resource_errors, limit_exceeded_errors)
+
+    def init_tools(self, jobs: Iterable[JobSpec]) -> None:
+        """Initialise an index tracking the number of jobs with each status, per tool."""
+        for job in jobs:
+            tool = job.tool.name
+            if job_status_counts := self._job_status_count_per_tool.get(tool, None):
+                job_status_counts[JobStatus.QUEUED] += 1
+            else:
+                self._job_status_count_per_tool[tool] = dict.fromkeys(JobStatus, 0)
+                self._job_status_count_per_tool[tool][JobStatus.QUEUED] = 1

@@ -6,6 +6,7 @@
 
 import multiprocessing
 import os
+import random
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ from dvsim.report.data import IPMeta, ToolMeta
 from dvsim.runtime.legacy import LegacyLauncherAdapter
 from dvsim.scheduler.core import Scheduler
 from dvsim.scheduler.resources import ResourceManager, StaticResourceProvider
+from dvsim.tool.utils import _SUPPORTED_SIM_TOOLS
 
 __all__ = ()
 
@@ -33,6 +35,10 @@ __all__ = ()
 # Default scheduler test timeout to handle infinite loops in the scheduler
 DEFAULT_TIMEOUT = 2
 SIGNAL_TEST_TIMEOUT = 5
+
+# Used for randomly selected simulation tool names
+SEED = 42
+random.seed(SEED)
 
 
 @dataclass
@@ -255,9 +261,15 @@ def ip_meta_factory(**overrides: str | None) -> IPMeta:
     return IPMeta(**meta)
 
 
-def tool_meta_factory(name: str = "test_tool", version: str = "test_version") -> ToolMeta:
+def tool_meta_factory(name: str = "", version: str = "test_version") -> ToolMeta:
     """Create a ToolMeta from a set of default values, for use in testing."""
-    return ToolMeta(name=name, version=version)
+    if name:
+        return ToolMeta(name=name, version=version)
+    # Do not need cryptographically secure PRNG for generating values to test on.
+    return ToolMeta(
+        name=random.choice([*_SUPPORTED_SIM_TOOLS]),  # noqa: S311
+        version=version
+    )
 
 
 def build_workspace(
@@ -1037,3 +1049,55 @@ class TestSignals:
             proc.join()
             pytest.fail("Scheduler hung and was terminated")
         assert_that(proc.exitcode, equal_to(0))
+
+
+class TestLogging:
+    @staticmethod
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(DEFAULT_TIMEOUT)
+    async def test_blocked_weight_starvation_logs(fxt: Fxt) -> None:
+        """Test that high weight jobs without fulfilled deps do not block lower weight jobs."""
+        # All jobs spawn from a start job.
+        # There is one chain "start -> long_blocker -> high" where we have a high weight job
+        # blocked by some blocker that takes a long time.
+        # There are then 5 other jobs that depend on "start -> short_blocker -> low", which
+        # are low weight jobs blocked by some blocker that takes a short time.
+        start_job = job_spec_factory(fxt.tmp_path, name="start")
+        short_blocker = job_spec_factory(fxt.tmp_path, name="short", dependencies=["start"])
+        long_blocker = job_spec_factory(fxt.tmp_path, name="long", dependencies=["start"])
+        high = job_spec_factory(fxt.tmp_path, name="high", dependencies=["long"], weight=1000000)
+        jobs = [start_job, short_blocker, long_blocker, high]
+        jobs += make_many_jobs(
+            fxt.tmp_path,
+            n=5,
+            weight=1,
+            dependencies=["short"],
+            vary_targets=True,
+        )
+        # The blockers should take a bit of time, to let the non-blocked jobs progress
+        fxt.mock_ctx.set_config(
+            short_blocker,
+            MockJob(status_thresholds=[(0, JobStatus.RUNNING), (1, JobStatus.PASSED)]),
+        )
+        fxt.mock_ctx.set_config(
+            long_blocker,
+            MockJob(status_thresholds=[(0, JobStatus.RUNNING), (5, JobStatus.PASSED)]),
+        )
+        # Do not coalesce nearby events, as otherwise the blockers may complete close
+        # enough with a low/zero polling frequency that they get batched and the
+        # high priority job is scheduled first.
+        result = await Scheduler(
+            jobs,
+            fxt.backends,
+            MOCK_BACKEND,
+            coalesce_window=None,
+            resource_manager=ResourceManager(StaticResourceProvider({"A": 5, "B": 10}))
+        ).run()
+        _assert_result_status(result, len(jobs))
+        # We expect that the high weight job should have been scheduled last, since
+        # it was blocked by the blocker (unlike all the other lower weight jobs)
+        assert_that(fxt.mock_ctx.order_started[0], equal_to(start_job))
+        assert_that(fxt.mock_ctx.order_started[-1], equal_to(high))
+
+        # Force some logs to show up.
+        pytest.fail("Force some logs to appear")

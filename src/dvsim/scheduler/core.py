@@ -38,6 +38,7 @@ class JobRecord:
 
     spec: JobSpec
     backend_key: str  # either spec.backend, or the default backend if not given
+    tool: str   # Many cases could be a recognised SimTool, but we can't assume this
 
     status: JobStatus = JobStatus.SCHEDULED
     status_info: JobStatusInfo | None = None
@@ -155,6 +156,17 @@ class Scheduler:
         self._on_job_status_change: list[OnJobStatusChangeCb] = []
         self._on_kill_signal: list[OnSchedulerKillCb] = []
 
+        if log.isEnabledFor(log.DEBUG) and self._resources:
+            self.add_job_status_change_callback(
+                lambda spec, old, new, resources=self._resources:
+                    resources.update_job_status_count_per_tool(spec, old, new)
+            )
+            self.add_job_status_change_callback(
+                lambda _spec, _old, _new, resources=self._resources:
+                    resources.log_job_status_count_per_tool()
+            )
+            self._resources.init_tools(jobs)
+
         self._jobs = self.build_graph(jobs, self._backends, self._default_backend)
 
     def add_run_start_callback(self, cb: OnRunStartCb) -> None:
@@ -206,7 +218,7 @@ class Scheduler:
                 err = f"Unknown job backend '{spec.backend}'"
                 raise ValueError(err)
             backend_name = default_backend if spec.backend is None else spec.backend
-            job_graph[spec.id] = JobRecord(spec=spec, backend_key=backend_name)
+            job_graph[spec.id] = JobRecord(spec=spec, backend_key=backend_name, tool=spec.tool.name)
 
         # Build a graph from the adjacency list formed by the spec dependencies
         for job in job_graph.values():
