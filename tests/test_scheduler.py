@@ -1056,12 +1056,10 @@ class TestLogging:
     @pytest.mark.asyncio
     @pytest.mark.timeout(DEFAULT_TIMEOUT)
     async def test_blocked_weight_starvation_logs(fxt: Fxt) -> None:
-        """Test that high weight jobs without fulfilled deps do not block lower weight jobs."""
-        # All jobs spawn from a start job.
-        # There is one chain "start -> long_blocker -> high" where we have a high weight job
-        # blocked by some blocker that takes a long time.
-        # There are then 5 other jobs that depend on "start -> short_blocker -> low", which
-        # are low weight jobs blocked by some blocker that takes a short time.
+        """Test logging of job status counts per tool.
+
+        This test modifies TestSchedulingPriority::test_blocked_weight_starvation
+        """
         start_job = job_spec_factory(fxt.tmp_path, name="start")
         short_blocker = job_spec_factory(fxt.tmp_path, name="short", dependencies=["start"])
         long_blocker = job_spec_factory(fxt.tmp_path, name="long", dependencies=["start"])
@@ -1074,7 +1072,6 @@ class TestLogging:
             dependencies=["short"],
             vary_targets=True,
         )
-        # The blockers should take a bit of time, to let the non-blocked jobs progress
         fxt.mock_ctx.set_config(
             short_blocker,
             MockJob(status_thresholds=[(0, JobStatus.RUNNING), (1, JobStatus.PASSED)]),
@@ -1083,9 +1080,6 @@ class TestLogging:
             long_blocker,
             MockJob(status_thresholds=[(0, JobStatus.RUNNING), (5, JobStatus.PASSED)]),
         )
-        # Do not coalesce nearby events, as otherwise the blockers may complete close
-        # enough with a low/zero polling frequency that they get batched and the
-        # high priority job is scheduled first.
         result = await Scheduler(
             jobs,
             fxt.backends,
@@ -1094,8 +1088,6 @@ class TestLogging:
             resource_manager=ResourceManager(StaticResourceProvider({"A": 5, "B": 10}))
         ).run()
         _assert_result_status(result, len(jobs))
-        # We expect that the high weight job should have been scheduled last, since
-        # it was blocked by the blocker (unlike all the other lower weight jobs)
         assert_that(fxt.mock_ctx.order_started[0], equal_to(start_job))
         assert_that(fxt.mock_ctx.order_started[-1], equal_to(high))
 

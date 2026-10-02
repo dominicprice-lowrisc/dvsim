@@ -233,7 +233,7 @@ class ResourceManager:
         for job in jobs:
             tool = job.tool.name
             if job_status_counts := self._job_status_count_per_tool.get(tool, None):
-                job_status_counts[JobStatus.QUEUED] += 1
+                job_status_counts[JobStatus.SCHEDULED] += 1
             else:
                 self._job_status_count_per_tool[tool] = dict.fromkeys(JobStatus, 0)
-                self._job_status_count_per_tool[tool][JobStatus.QUEUED] = 1
+                self._job_status_count_per_tool[tool][JobStatus.SCHEDULED] = 1
