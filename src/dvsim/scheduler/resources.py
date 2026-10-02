@@ -115,7 +115,6 @@ class ResourceManager:
         self, spec: JobSpec, old: JobStatus, new: JobStatus
     ) -> None:
         """Update the index that tracks job status counts per resource."""
-        # TODO: Fix update logic to prevent negative counts
         if status_counts := self._job_status_count_per_tool.get(spec.tool.name):
             status_counts[old] = status_counts[old] - 1
             status_counts[new] = status_counts[new] + 1
@@ -127,13 +126,13 @@ class ResourceManager:
         This should be registered as a callback on job status change in Scheduler only when debug
         logging is enabled.
         """
-        # TODO: table format log message?
         # TODO: take CLI input modulo log count.
         for tool, status_counts in self._job_status_count_per_tool.items():
-            for status, count in status_counts.items():
-                log.debug(
-                    "Tool '%s' has '%s' jobs with status '%s'", tool, count, status.value
-                )
+            status_count_str = ", ".join(
+                f"{status.value[0]}: {count:>5}"
+                for status, count in status_counts.items()
+            )
+            log.debug("[Tool: %-15s] [ %s ]", tool, status_count_str)
 
     def _log_usage(self, capacity: ResourceMapping, used: ResourceMapping) -> None:
         """Debug log individual job resource usage aggregates."""
@@ -228,7 +227,7 @@ class ResourceManager:
         self._log_usage(capacity, aggregate)
         self._emit_validation_errors(missing_resource_errors, limit_exceeded_errors)
 
-    def init_tools(self, jobs: Iterable[JobSpec]) -> None:
+    def init_tools_index(self, jobs: Iterable[JobSpec]) -> None:
         """Initialise an index tracking the number of jobs with each status, per tool."""
         for job in jobs:
             tool = job.tool.name

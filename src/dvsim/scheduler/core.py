@@ -165,7 +165,7 @@ class Scheduler:
                 lambda _spec, _old, _new, resources=self._resources:
                     resources.log_job_status_count_per_tool()
             )
-            self._resources.init_tools(jobs)
+            self._resources.init_tools_index(jobs)
 
         self._jobs = self.build_graph(jobs, self._backends, self._default_backend)
 
